@@ -23,15 +23,15 @@ pick hyper-parameters than using Grid Search. I then fell into a rabbit hole, an
 we are! \
 Finding the best hyper-parameter configuration is honestly not that important usually. 
 But! It is fun to think about. A (possibly) high dimensional non-convex optimization problem without a gradient is definitely a challenge. Research has become more relevant and prevalent in the last decade due to Neural Networks. The neural network hyper-parameters are more significant, where as with typical bagging and boosting methods default parameters are usually pretty good, 
-with small improvements with adjusting the hyper-parameters. However, the most important thing is, again, that it is fun to think about and there are many interesting solutions!
+with small improvements with adjusting the hyper-parameters. However, the most important thing is, again, that it is fun to think about and there are many interesting solutions! An important note is that I do not have nearly enough computational resources to properly test these
+algorithms, or even test all the algorithms I came across. This intended to be a brief exploration of the HPO problem with some solutions to said problem. 
 
 # Optimizers
 
-I tested 5 different Hyper-parameter Optimization techniques. In this section
-I will present a description of each along with psuedocode and strengths and weaknesses.
-
-and a cleaned version of
-my R code. The R code is not the same as the one I ran, but rather has some extras (such as runtime calculations and test errors) removed, as well as some other particular specific to my implementation. The full R script I used is available on my Github here (hopefully I remembered to link it and to delete this).
+I tested 5 different Hyper-parameter Optimization techniques, there are others, I picked 5 that seemed interesting to me, otherwise the scope of this project would be too large. In this section
+I will present a description of each along with psuedocode, strengths and weaknesses, and some extensions and considerations.
+The R code for each is in the appendix, each section has a link to the corresponding code. 
+The R code is not the same as the one I ran, but rather has some extras (such as runtime calculations and test errors) removed, as well as some other particular specific to my implementation. The code for the objective function is also omitted here. The full R script I used and the rmd file to create this pdf are available on my Github **[here](https://github.com/benipalkaranpreet/HPO)**.
 
 ## Grid Search 
 
@@ -54,13 +54,13 @@ evaluating each point to find the best one.
 ```
 
 ### Considerations
-Strengths: \
+**Strengths:** \
 - simple \
-Weaknesses: \
+**Weaknesses:** \
 - Tests many 'bad' configurations  \
 - Does not effectively search the space, good configurations hiding in the spaces between the points \
 - Requires prior knowledge - in which case manual search may be better \
-Extensions: \
+**Extensions:** \
 - Maybe just don't use this. Consider manual search instead of this, or use one
 of the other optimizers. \
 
@@ -72,7 +72,7 @@ rf_params <- list( # 6 x 6, so a total of 36 models were checked
 )
 ```
 
-R code: [Click Me!](#grid-search-code)
+R code: **[Click Me!](#grid-search-code)**
 
 
 ## Random Search
@@ -100,10 +100,10 @@ benefit is that less time is wasted on unimportant parameters. Consider this ima
 ```
 
 ### Considerations
-Strengths: \
+**Strengths:** \
 - Not constrained to a grid and so can check any point \
 - Can set different distributions so "bad" configs are tested less often \
-Weakness: \
+**Weaknesses:** \
 - Random, so a low number of iterations may not find a decent model as space would not be covered effectively \
 - May need many iterations to find a close-to-best model, especially in higher dimensions \
 - May check multiple configs that are very similar, while some parts of the parameter space remain
@@ -139,7 +139,7 @@ ggplot(data.frame(x), aes(x)) +
   theme_minimal()
 ```
 
-R code:  [Click Me!](#random-search-code)
+R code:  **[Click Me!](#random-search-code)**
 
 
 ## Bayesian Optimization using Guassian Processes
@@ -188,12 +188,12 @@ but you could adjust the algorithm to minimize just as easily.
 ```
 
 ### Considerations
-Strengths: \
+**Strengths:** \
 - Learns from previous iterations to (often after sufficient iterations) find better and better configurations \
-Weaknesses: \
+**Weaknesses:** \
 - Fitting the GP and maximizing it can take a long time, especially in higher dimensions.  \
 - Maximizing the GP can fail to converge \
-Extensions: \
+**Extensions:** \
 - Consider using a grid or an Uniform Design (more below with SeqUD) as the initial grid. This
 will explore the space and then we can use the costly Bayes optimization to fine tune. This way
 we will need fewer iterations if we just start with a good understand of the objective function's surface. \
@@ -201,7 +201,7 @@ we will need fewer iterations if we just start with a good understand of the obj
 also common choices. The Kernel does suffer from the curse of dimensionality in higher dimensions, but
 Random Forest allegedly works very well, much better than GP in >20 dimensions. \
 
-R code:  [Click Me!](#bayesian-optimization-code)
+R code: **[Click Me!](#bayesian-optimization-code)**
 
 
 ## Hyperband
@@ -251,22 +251,22 @@ more resources 'exploiting' a few configurations.
 \end{algorithm}
 ```
 
-Considerations:    \
-Strengths: \
+### Considerations:
+**Strengths:** \
 - Considers more configurations than Random Search in the same amount of time. \
-Weaknesses: \
+**Weaknesses:** \
 - We cannot control how resources are allocated, only how many there are. At least in 
 the base algorithm. It seems rather arbitrary, the paper does not explain why. \
 - If the results of a low resource evaluation has low variance, then we do not need
 to repeatedly test that config multiple times. If it has high variance, then good configs
 may be discarded early. \
-Extensions: \
+**Extensions:** \
 - Try a more flexible approach, specifying the brackets manually may be preferred. \
 - For your specific dataset and model test if low resources still result in 
 accurate assessments and then use a higher $\eta$, or specify brackets manually to check more
 configurations. \
 
-R code:  [Click Me!](#hyperband-code)
+R code:  **[Click Me!](#hyperband-code)**
 
 
 ## Sequential Uniform Designs (SeqUD)
@@ -395,18 +395,18 @@ Now that we have that image of the algorithm in our minds, here is the pseudo co
 ```
 
 ### Considerations
-Strengths: \
+**Strengths:** \
 - Maximizes exploration of the search space for a given number of configs. Avoids
 checking the same or very similar configs twice. \
 - By searching around the previous best it act similar to Bayes search, making it less
 likely to miss good configs in spaces between configs like the non-sequential searchers. \
 - Can still be run in parallel for config evaluations, unlike Bayes. \
-Weaknesses: \
+**Weaknesses:** \
 - If the objective function has two 'peaks' only one may be explored in the subsequent
 iteration, which may result in the best model being missed. \
 - Needs some intuition to use: how to balance iterations vs number of points per iteration. \
 - Augmenting the UD can take some time, but usually not as much as Bayes. \
-Extensions: \
+**Extensions:** \
 - Instead of zooming in to just one point we could zoom in on multiple if the second best
 configuration is not in the new box. We could also use an adaptive size for the new box, removing
 the 'bad' parts of the search space first. \
@@ -416,10 +416,10 @@ run faster. \
 but use the original design shrunk down to the size of the new box. This may result
 in similar models being checked twice but it will still be faster. Additionally we could
 also just remove similar configuration if they occur, in which case it will always be faster. \
-- Use the same distriubtions as Random Search. Every distribution function can be set to take
-a real number between [0,1] and use the inverse CDF to convert into a draw from that distribution. So we can convert from the $[0,1]^d$ hypercube to the (possiblitly joint) multivariate distribution. 
+- Use the same distributions as Random Search. Every distribution function can be set to take
+a real number between [0,1] and use the inverse CDF to convert into a draw from that distribution. So we can convert from the $[0,1]^d$ hypercube to the (possibility joint) multivariate distribution. 
 
-R code:  [Click Me!](#sequd-code)
+R code:  **[Click Me!](#sequd-code)**
 
 
 # Algorithm Testing
@@ -454,9 +454,9 @@ except for CNN was tested on the following five datasets: \
 CNN was tested only on MNIST, again due to computational limitations.\
 Models are selected by comparing the validation error defined as follows for each
 model: \
-Random Forest: Out-of-Bag (OOB) Error \
-XGBoost: 3-fold Cross Validation \
-Neural Network: Train / Valid split \
+- Random Forest: Out-of-Bag (OOB) Error \
+- XGBoost: 3-fold Cross Validation \
+- Neural Network: Train / Valid split \
 Each optimizer will return the validation and test errors of the selected configuration, as well
 as the runtime. The runtime includes the full run of the algorithm up-to and including the 
 selection of the best configuration, it excludes the calculation of the test error. \
@@ -468,9 +468,9 @@ SeqUD: Same as Hyperband. \
 
 ## Preliminary Results
 
-There are 16 runs per optimizier for a total of 80 observations. As stated before
-there are not enough observations to draw conclusions. Furthermore, the best optimzier
-changes at different dimensions, for example if the objective function can be evaluatied quickly then Bayes and SeqUD are at a disadvantage since they spend time picking the next point. So we would need many obervations for each to fully
+There are 16 runs per optimizer for a total of 80 observations. As stated before
+there are not enough observations to draw conclusions. Furthermore, the best optimizer
+changes at different dimensions, for example if the objective function can be evaluated quickly then Bayes and SeqUD are at a disadvantage since they spend time picking the next point. So we would need many observations for each to fully
 understand which to choose in each situation. \
 Of course the runtime and errors are in very different scales for each model and
 dataset. I normalized the runtimes and test errors by dividing by the runtime and
@@ -545,9 +545,9 @@ ggplot(res[res$model=="CNN" | res$model=="FFNN",], aes(x = runtime, y = test_err
   theme_minimal(base_size = 13)
 ```
 
-Bayesian Optimzier takes a very long time to select the next point, for the CNN it
+Bayesian Optimizer takes a very long time to select the next point, for the CNN it
 took about 5-8 minutes to evaluate one configuration, but Bayes might take 60-120 minutes
-to pick the next point. So it tests compartively very few configurations, which is likely
+to pick the next point. So it tests comparatively very few configurations, which is likely
 why it performs worse than the others here. \
 
 The runtimes were intentionally meant to be similar, so let's focus on the distribution
@@ -586,7 +586,7 @@ Search. Hopefully this was interesting to you!
 # Appendix
 ## R Code
 ### Grid Search Code
-[Click here to go back](#grid-search)
+**[Click here to go back](#grid-search)**
 ```{r, eval=FALSE}
 grid_search <- function(X, y, obj_func, param_values) {
   # Create the grid
@@ -604,7 +604,7 @@ grid_search <- function(X, y, obj_func, param_values) {
 }
 ```
 ### Random Search Code
-[Click here to go back](#random-search)
+**[Click here to go back](#random-search)**
 ```{r}
 random_search <- function(X, y, obj_func, param_dists, n) {
   # get n many realizations of the parameters
@@ -624,7 +624,7 @@ random_search <- function(X, y, obj_func, param_dists, n) {
 }
 ```
 ### Bayesian Optimization Code
-[Click here to go back](#bayesian-optimization-using-guassian-processes) \
+**[Click here to go back](#bayesian-optimization-using-guassian-processes)** \
 This one is really simple since the bayesOpt function does all the work for us. 
 ```{r}
 bayes_search <- function(X, y, obj_func, param_bounds, n, t_limit=NULL) {
@@ -648,7 +648,7 @@ bayes_search <- function(X, y, obj_func, param_bounds, n, t_limit=NULL) {
 }
 ```
 ### Hyperband Code
-[Click here to go back](#hyperband)
+**[Click here to go back](#hyperband)**
 ```{r, eval=FALSE}
 hyperband <- function(X, y, obj_func, param_dists, R, eta = 3) {
   all_results <- list()
@@ -695,7 +695,7 @@ hyperband <- function(X, y, obj_func, param_dists, R, eta = 3) {
 }
 ```
 ### SeqUD Code
-[Click here to go back](#sequential-uniform-designs-sequd)
+**[Click here to go back](#sequential-uniform-designs-sequd)**
 ```{r}
 augmentUD <- function(X0, add, n_candidates = 1000) {
   # X0: existing design (rows = runs, cols = factors), scaled to [0,1]
