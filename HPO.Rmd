@@ -1,0 +1,818 @@
+---
+title: "Hyper-Parameter Optimization"
+author: "Karanpreet Benipal"
+output: pdf_document
+header-includes:
+- \usepackage{algorithm}
+- \usepackage{algpseudocode}
+---
+
+```{r setup, include=FALSE, cache=TRUE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+library(ggplot2)
+library(SFDesign)
+```
+
+# Introduction
+This project takes a look at some current Hyper-parameter Optimization techniques, 
+presents the algorithms and my own R implementations and results. I started out wanting
+to do something with boosting, and then began to wonder if there was a better way to 
+pick hyper-parameters than using Grid Search. I then fell into a rabbit hole, and here 
+we are! \
+Finding the best hyper-parameter configuration is honestly not that important usually. 
+But! It is fun to think about. A (possibly) high dimensional non-convex optimization problem without a gradient is definitely a challenge. Research has become more relevant and prevalent in the last decade due to Neural Networks. The neural network hyper-parameters are more significant, where as with typical bagging and boosting methods default parameters are usually pretty good, 
+with small improvements with adjusting the hyper-parameters. However, the most important thing is, again, that it is fun to think about and there are many interesting solutions!
+
+# Optimizers
+
+I tested 5 different Hyper-parameter Optimization techniques. In this section
+I will present a description of each along with psuedocode and strengths and weaknesses.
+
+and a cleaned version of
+my R code. The R code is not the same as the one I ran, but rather has some extras (such as runtime calculations and test errors) removed, as well as some other particular specific to my implementation. The full R script I used is available on my Github here (hopefully I remembered to link it and to delete this).
+
+## Grid Search 
+
+Grid search involves manually constructing a grid over the search space, and 
+evaluating each point to find the best one.
+
+```{=latex}
+\begin{algorithm}
+\caption{Grid Search}
+\begin{algorithmic}[1]
+    \Procedure{GridSearch}{grid\_points, $\mathcal{D}_{\text{train}}$}
+        \State $T \gets \text{expand.grid}(\text{grid\_points})$
+        \For{$i \in \{1, \dots, \text{length}(T)\}$}
+            \State $L_i \gets \text{objective\_function}(\mathcal{D}_{\text{train}},~T_i)$
+        \EndFor
+        \State \Return Parameter configuration with the lowest error.
+    \EndProcedure
+\end{algorithmic}
+\end{algorithm}
+```
+
+### Considerations
+Strengths: \
+- simple \
+Weaknesses: \
+- Tests many 'bad' configurations  \
+- Does not effectively search the space, good configurations hiding in the spaces between the points \
+- Requires prior knowledge - in which case manual search may be better \
+Extensions: \
+- Maybe just don't use this. Consider manual search instead of this, or use one
+of the other optimizers. \
+
+Here is an example of what the parameter grid points were for Random Forest:
+```{r}
+rf_params <- list( # 6 x 6, so a total of 36 models were checked
+  m = c(0.5, 0.6, 0.7, 0.8, 0.9, 1),
+  depth = 1:6
+)
+```
+
+R code: [Click Me!](#grid-search-code)
+
+
+## Random Search
+
+Random search involves generating n points in the search space by drawing from a
+distribution or distributions. In my implementation each hyper-parameter has its'
+own distribution and the each parameter is drawn independently of the others. A main
+benefit is that less time is wasted on unimportant parameters. Consider this image:
+
+![At the top and left are the marginal distributions. Random Search understands the important parameter far better than Grid Search, while not wasting time and resources on the unimportant parameter. Source: Figure 1 from "Random Search for Hyper-Parameter Optimmization" by Bergstra & Bengio](C:/Users/Karan/Desktop/HPO/random_search_image.jpg) 
+
+```{=latex}
+\begin{algorithm}
+\caption{Random Search}
+\begin{algorithmic}[1]
+    \Procedure{RandomSearch}{n, dists, $\mathcal{D}_{\text{train}}$}
+        \State $T \gets \text{draw.points}(\text{n, dists})$
+        \For{$i \in \{1, \dots, n\}$}
+            \State $L_i \gets \text{objective\_function}(\mathcal{D}_{\text{train}},~T_i)$
+        \EndFor
+        \State \Return Parameter configuration with the lowest error.
+    \EndProcedure
+\end{algorithmic}
+\end{algorithm}
+```
+
+### Considerations
+Strengths: \
+- Not constrained to a grid and so can check any point \
+- Can set different distributions so "bad" configs are tested less often \
+Weakness: \
+- Random, so a low number of iterations may not find a decent model as space would not be covered effectively \
+- May need many iterations to find a close-to-best model, especially in higher dimensions \
+- May check multiple configs that are very similar, while some parts of the parameter space remain
+unexplored \
+
+Here is an example of what was used for XGBoost, note that every element in the
+list is a function of n which provides n draws from the corresponding hyper-parameter
+distribution. 
+```{r}
+xgb_dists <- list(
+  # eta is min of 3 uniforms. favours smaller values, does not allow smaller than 0.005
+  eta = function(n) pmax(pmin(runif(n), runif(n), runif(n)), 0.005),        
+  depth = function(n) sample(1:6, n, TRUE),  # Integer between 1 and 6 (inclusive)
+  subsample = function(n) runif(n, 0.7, 1), # Uniform between 0.7 and 1
+  colsample = function(n) runif(n, 0.7, 1) # Uniform between 0.7 and 1
+)
+```
+Here's a look at the distribution for $\eta$:
+```{r, echo=FALSE, out.width="70%", fig.align='center'}
+# Generate data
+n <- 10^7
+x <- pmax(pmin(runif(n), runif(n), runif(n)), 0.005)
+
+# Plot the distribution as a smooth line
+ggplot(data.frame(x), aes(x)) +
+  geom_density(color = "steelblue", linewidth = 1, adjust=0.5) +
+  scale_x_continuous(limits = c(0.005, max(x))) +
+  labs(
+    title = "",
+    x = "",
+    y = ""
+  ) +
+  theme_minimal()
+```
+
+R code:  [Click Me!](#random-search-code)
+
+
+## Bayesian Optimization using Guassian Processes
+
+Bayesian Optimization is an entire topic that could fill books (and it does). In
+brief, the idea is to select the next point of interest based on the current points
+we have evaluated. Now that we have new information we select the most interesting point
+again. We iterate on this until we reach some stopping criteria. In my implementation, the search
+would stop after: a) convergence, b) a maximum number of iterations is reached, or c) the time limit expired. 
+
+Consider this image:
+
+![Guassian Process confidence intervals with acquisition function. Source: Figure 4.12 from Roman Garnett's book "Bayesian Optimization".](C:/Users/Karan/Desktop/HPO/bayes_opt_image.jpg) 
+
+The idea is to first evaluate some initial points and then to fit some surrogate model to those
+points. In the image above (and my implementation) Gaussian Process Regression is used. Then,
+some acquisition function is applied. Whichever point maximizes this acquisition function is
+the next point we are going to evaluate. Then simply repeat the process. Since we are minimizing, 
+I have used the negative of the objective function here, since the base algorithm is a maximizer,
+but you could adjust the algorithm to minimize just as easily. 
+
+```{=latex}
+\begin{algorithm}
+\caption{Bayesian Optimization}
+\begin{algorithmic}[1]
+    \Procedure{BayesOpt}{bounds, n, $t_{max}$, $\mathcal{D}_{\text{train}}$}
+        \State $n\_initial \gets d+1$, for a d-dimensional search
+        \State $T \gets uniform\_points(bounds, n\_initial)$
+        \For{$i \in \{1, \dots, n_initial\}$}
+            \State $T.error_i \gets \text{objective\_function}(\mathcal{D}_{\text{train}},~T_i)$
+        \EndFor
+        \State Begin Bayesian Optimization
+        \For{$j \in \{n\_{initial}+1, \dots, n\}$}
+          \State $fit \gets GuassianProcessRegression(T)$
+          \State $x_{next} \gets ArgMax(AcquisitionFunction(fit))$
+          \State $x_{next}.error_i \gets \text{objective\_function}(\mathcal{D}_{\text{train}},~x_{next})$
+          \State $T \gets$ append($x_{next}$,~T)
+          \If{SpottingCriteriaMet()}
+            \State exit
+          \EndIf
+        \EndFor
+        \State \Return Parameter configuration with the lowest error.
+    \EndProcedure
+\end{algorithmic}
+\end{algorithm}
+```
+
+### Considerations
+Strengths: \
+- Learns from previous iterations to (often after sufficient iterations) find better and better configurations \
+Weaknesses: \
+- Fitting the GP and maximizing it can take a long time, especially in higher dimensions.  \
+- Maximizing the GP can fail to converge \
+Extensions: \
+- Consider using a grid or an Uniform Design (more below with SeqUD) as the initial grid. This
+will explore the space and then we can use the costly Bayes optimization to fine tune. This way
+we will need fewer iterations if we just start with a good understand of the objective function's surface. \
+- Instead of GP, one can use really any model for the response surface. Random Forest and Kernel density estimates are 
+also common choices. The Kernel does suffer from the curse of dimensionality in higher dimensions, but
+Random Forest allegedly works very well, much better than GP in >20 dimensions. \
+
+R code:  [Click Me!](#bayesian-optimization-code)
+
+
+## Hyperband
+
+Hyperband involves strategically allocating resources to search more parameter
+combinations compared to random search in the same time. The paper suggests
+a few different ideas for what the resource should be. They are:\
+- Training time \
+- Dataset subsample \
+- Feature subsample \
+Different types of data would be more conducive to different resources. In my 
+implementation I used dataset subsample as that works with the different datasets
+and objective functions I used in my tests. \
+
+First, first we need to talk about Successive Halving. Successive Halving is similar to
+random search, it generates some random points but evaluates them with a limited
+resource allocation. Then it chooses the best models and then increases the resource
+allocation and refits with the chosen points. The number of points is reduced by a 
+factor of $\eta$ each round. \
+Hyperband runs several brackets of Successive Halving with different starting resource
+allocations, so some brackets explore many different configurations and some spend
+more resources 'exploiting' a few configurations. 
+
+```{=latex}
+\begin{algorithm}
+\caption{Hyperband}
+\begin{algorithmic}[1]
+    \Procedure{Hyperband}{R, $\eta$, dists, $\mathcal{D}_{\text{train}}$}
+        \State $S_{max} \gets \lfloor{\text{log}_\eta(R)}\rfloor$
+        \State $B \gets (S_{max}+1)\dot R$
+        \For{$s \in \{S_{max}, \dots, 0\}$}
+            \State $n \gets \lceil\frac{B\eta^s}{R\cdot(s+1)}\rceil$
+            \State $r \gets R\eta^{-s}$
+            \State $T \gets \text{draw.points}(\text{n, dists})$
+            \For{$i \in \{0,\dots, s\}$}
+              \State $n_i \gets \lfloor n\eta^{-i}\rfloor$
+              \State $r_i \gets r\eta^i$
+              \For{$j \in \{1, \dots, n\}$}
+                \State $L_j \gets \text{objective\_function}(\mathcal{D}_{\text{train}},~T_j,~r_j)$
+              \EndFor
+              \State $T \gets top\_k(T, L, \lfloor\frac{n_i}{\eta}\rfloor)$
+            \EndFor
+        \EndFor
+        \State \Return Parameter configuration with the lowest error.
+    \EndProcedure
+\end{algorithmic}
+\end{algorithm}
+```
+
+Considerations:    \
+Strengths: \
+- Considers more configurations than Random Search in the same amount of time. \
+Weaknesses: \
+- We cannot control how resources are allocated, only how many there are. At least in 
+the base algorithm. It seems rather arbitrary, the paper does not explain why. \
+- If the results of a low resource evaluation has low variance, then we do not need
+to repeatedly test that config multiple times. If it has high variance, then good configs
+may be discarded early. \
+Extensions: \
+- Try a more flexible approach, specifying the brackets manually may be preferred. \
+- For your specific dataset and model test if low resources still result in 
+accurate assessments and then use a higher $\eta$, or specify brackets manually to check more
+configurations. \
+
+R code:  [Click Me!](#hyperband-code)
+
+
+## Sequential Uniform Designs (SeqUD)
+
+SeqUD can be thought of as a "batch-sequential" algorithm. Unlike Bayes where one config
+at a time is selected, here we select many configs within a smaller and smaller search space. 
+The first step is selecting points in the search space that fill
+the full parameter space as evenly as possible. This is determined
+by a discrepancy measure, my implementation uses the 'wrap-around discrepancy'. These points are
+created in the $[0,1]^d$ hypercube and then mapped to the hyperparameter space.
+Each point is evaluated, then the search space is halved along each dimension and 
+centered at the best point. New points are added to this reduced space, again spread
+evenly taking the existing points into consideration as well. This is then repeated for a number of iterations. 
+To make things clearer, consider the following plots which show as example of this
+in two dimensions. 
+
+```{r, echo=FALSE, fig.height=2.5}
+augmentUD <- function(X0, add, n_candidates = 1000) {
+  # X0: existing design (rows = runs, cols = factors), scaled to [0,1]
+  # add: number of new points to add
+  # n_candidates: number of candidate points to try each step
+  d <- ncol(X0)
+  new_points <- c()
+  
+  for (k in 1:add) {
+    # generate random candidate points
+    C <- matrix(runif(n_candidates * d), ncol = d)
+    # score each candidate by discrepancy when added
+    scores <- apply(C, 1, function(cand) {
+      SFDesign::uniform.crit(rbind(X0, cand))
+    })
+    # pick best candidate
+    best <- C[which.min(scores), , drop = FALSE]
+    # update design
+    X0 <- rbind(X0, best)
+    new_points <- rbind(new_points, best)
+  }
+  new_points
+}
+
+set.seed(6666)
+X <- uniformLHD(n = 20, p = 2)$design
+
+
+best <- X[which.min(abs(rowSums(c(0.5, 0.5) - X))), ,drop=FALSE]
+lwr <- best - 0.25
+upr <- best + 0.25
+
+shift_lwr <- pmax(0 - lwr, 0)  
+shift_upr <- pmin(1 - upr, 0)   
+
+shift <- shift_lwr + shift_upr
+
+lwr <- lwr + shift
+upr <- upr + shift
+# Find which points are in the new bounds
+in_the_box <- apply(X, MARGIN=1, FUN = function(x) {2 * 2 == sum(c(x > lwr, x < upr )  )})
+box_points <- X[in_the_box, , drop=FALSE]
+
+# Augment the sub design
+n_e <- 20 - nrow(box_points)
+new_points <- augmentUD(sweep(box_points, 2, lwr, "-") / 0.5, add = n_e, n_candidates = 2000)
+
+# Shift the design back into place
+new_points <- (new_points * 0.5) 
+new_points <- sweep(new_points, 2, lwr, "+")
+
+par(mfrow = c(1,3))
+
+plot(X, xlab = "param 1", ylab="param 2", col="blue", main="Inital Points")
+
+plot(X, xlab = "param 1", ylab="param 2", col="blue", main="Find the Best and Zoom In")
+points(best, col="red")
+rect(
+  xleft = best[,1] - 0.25,
+  xright = best[,1] + 0.25,
+  ytop = best[,2] + 0.25,
+  ybottom = best[,2] - 0.25,
+  col = NULL,
+  border = "darkgreen",
+  lwd = 1
+)
+
+plot(X, xlab = "param 1", ylab="param 2", col="blue", main="Add New Points")
+points(best, col="red")
+rect(
+  xleft = best[,1] - 0.25,
+  xright = best[,1] + 0.25,
+  ytop = best[,2] + 0.25,
+  ybottom = best[,2] - 0.25,
+  col = NULL,
+  border = "darkgreen",
+  lwd = 1
+)
+points(new_points, col="darkgreen")
+```
+
+Now that we have that image of the algorithm in our minds, here is the pseudo code.
+
+```{=latex}
+\begin{algorithm}
+\caption{Sequential Uniform Designs}
+\begin{algorithmic}[1]
+    \Procedure{SeqUD}{n\_points, $T_{max}$, bounds, $\mathcal{D}_{\text{train}}$}
+        \State $r_b \gets 0.5$
+        \State $U \gets \text{empty set}$
+        \For{$t \in \{1, \dots, T_{max}\}$}
+          \If{$t = 1$}
+            \State $T \gets create\_UD(n\_points)$
+          \Else
+            \State $r_b \gets \frac{r_b}{2}$
+            \State $lwr \gets best-r_b$
+            \State $upr \gets best+r_b$
+            \State $box\_points \gets \{U: lwr<U_i<upr\}$
+            \State $T \gets augmentUD(n\_points, box\_points, lwr, upr)$
+          \EndIf
+          \For{$i \in \{1, \dots, n\}$}
+            \State $L_i \gets \text{objective\_function}(\mathcal{D}_{\text{train}},~T_i)$
+          \EndFor
+          \State $best \gets T_{which.min(L)}$
+        \EndFor
+        \State \Return Parameter configuration with the lowest error.
+    \EndProcedure
+\end{algorithmic}
+\end{algorithm}
+```
+
+### Considerations
+Strengths: \
+- Maximizes exploration of the search space for a given number of configs. Avoids
+checking the same or very similar configs twice. \
+- By searching around the previous best it act similar to Bayes search, making it less
+likely to miss good configs in spaces between configs like the non-sequential searchers. \
+- Can still be run in parallel for config evaluations, unlike Bayes. \
+Weaknesses: \
+- If the objective function has two 'peaks' only one may be explored in the subsequent
+iteration, which may result in the best model being missed. \
+- Needs some intuition to use: how to balance iterations vs number of points per iteration. \
+- Augmenting the UD can take some time, but usually not as much as Bayes. \
+Extensions: \
+- Instead of zooming in to just one point we could zoom in on multiple if the second best
+configuration is not in the new box. We could also use an adaptive size for the new box, removing
+the 'bad' parts of the search space first. \
+- As with all models we could also experiment with limited resource allocation to make it
+run faster. \
+- If augmentation takes longer than function evaluation, then just don't augment, 
+but use the original design shrunk down to the size of the new box. This may result
+in similar models being checked twice but it will still be faster. Additionally we could
+also just remove similar configuration if they occur, in which case it will always be faster. \
+- Use the same distriubtions as Random Search. Every distribution function can be set to take
+a real number between [0,1] and use the inverse CDF to convert into a draw from that distribution. So we can convert from the $[0,1]^d$ hypercube to the (possiblitly joint) multivariate distribution. 
+
+R code:  [Click Me!](#sequd-code)
+
+
+# Algorithm Testing
+
+## Experiment Setup
+
+In my experiment I test four different objective functions, when given a hyperparameter
+configurations they return a corresponding validation error. The different models
+and corresponding search space dimensions are:   \
+
+| Model                         | Number of Parameters |
+|-------------------------------|----------------------|
+| Random Forest                 | 2                    |
+| XGBoost                       | 4                    |
+| Feed Forward Neural Network   | 10, 13               |
+| Convolutional Neural Network  | 16                   |
+
+This is a very limited experiment as I lack the computational resources to test
+these methods properly (It would takes months to run on my computer). As such 
+we cannot draw any conclusive results from this. However, this is a decent starting
+place to identify some strengths and weaknesses of each one, and possibly some 
+extensions that may help in a practical application. \
+The datasets I used were taken from the UCI Machine Learning Repository. Each model, 
+except for CNN was tested on the following five datasets: \
+
+* Heart Disease [https://archive.ics.uci.edu/dataset/45/heart+disease] \
+* Bank Marketing [https://archive.ics.uci.edu/dataset/222/bank+marketing] \
+* Forest Fire [https://archive.ics.uci.edu/dataset/162/forest+fires] \
+* Bike Sharing [https://archive.ics.uci.edu/dataset/275/bike+sharing+dataset] \
+* Superconductivity [https://archive.ics.uci.edu/dataset/464/superconductivty+data] \
+
+CNN was tested only on MNIST, again due to computational limitations.\
+Models are selected by comparing the validation error defined as follows for each
+model: \
+Random Forest: Out-of-Bag (OOB) Error \
+XGBoost: 3-fold Cross Validation \
+Neural Network: Train / Valid split \
+Each optimizer will return the validation and test errors of the selected configuration, as well
+as the runtime. The runtime includes the full run of the algorithm up-to and including the 
+selection of the best configuration, it excludes the calculation of the test error. \
+The resources for the algorithms were assigned as follows: \
+Random Search: The same number of configurations as Grid Search. \
+Bayes Search: Time limit 10% more time than Grid Search for the same model and dataset, some exceptions in the case that Grid Search ran too fast. \
+Hyperband: Roughly set budget so that it takes a similar time to Grid Search. \
+SeqUD: Same as Hyperband. \
+
+## Preliminary Results
+
+There are 16 runs per optimizier for a total of 80 observations. As stated before
+there are not enough observations to draw conclusions. Furthermore, the best optimzier
+changes at different dimensions, for example if the objective function can be evaluatied quickly then Bayes and SeqUD are at a disadvantage since they spend time picking the next point. So we would need many obervations for each to fully
+understand which to choose in each situation. \
+Of course the runtime and errors are in very different scales for each model and
+dataset. I normalized the runtimes and test errors by dividing by the runtime and
+test error of Grid Search for that particular dataset and model. \
+
+The relative runtimes and test errors are in the plot below:
+
+```{r, echo=FALSE, warning=FALSE}
+res <- read.csv("C:/Users/Karan/Desktop/HPO/results/full_res.csv")
+
+models <- c("CNN", "FFNN", "RF", "XGB")
+ds <- c("MNIST", "super", "bike", "fire", "bank", "heart")
+
+for(m in models){
+  for(d in ds){
+    res[res$model==m & res$dataset==d,6] <- res[res$model==m & res$dataset==d,6] / res[res$model==m & res$dataset==d & res$opt=="Grid",6]
+    res[res$model==m & res$dataset==d,7] <- res[res$model==m & res$dataset==d,7] / res[res$model==m & res$dataset==d & res$opt=="Grid",7]
+  }
+}
+
+ggplot(res, aes(x = runtime, y = test_error, color = opt)) +
+  geom_point(size = 1) +
+  scale_color_manual(
+    values = c(
+      "Grid" = "black",
+      "Hyperband" = "#1f77b4",
+      "SeqUD" = "#2ca02c",
+      "Bayes" = "#d62728",
+      "Random" = "#ff7f0e"
+    )
+  ) +
+  xlim(0, 3) +
+  ylim(0, 2) +
+  labs(
+    x = "Runtime",
+    y = "Test Error",
+    title = "Optimizer Comparison"
+  ) +
+  theme_minimal(base_size = 13)
+```
+
+One thing that we can see is that Random Search seems to run faster than Grid Search. I
+think this is becuase each model has a parameter that controls how long the objective
+function takes to run, for example tree depth or learning rate. On average, Random Search
+distributions chose faster configurations than Grid Search. So it is ofcourse dependent on
+the grid, as we would expect Random Search to have the same runtime. It may be that
+making the Grid takes longer than randomly drawing, however I do not beleive that is
+a noticable difference.
+We do not see any clear patterns with the other optimizers. Let's take a look at just the neural network runs. 
+As generally HPO is used just for neural networks and we may be able to spot patterns
+just looking at the higher dimensional problems. 
+
+```{r, echo=FALSE}
+ggplot(res[res$model=="CNN" | res$model=="FFNN",], aes(x = runtime, y = test_error, color = opt)) +
+  geom_point(size = 1) +
+  scale_color_manual(
+    values = c(
+      "Grid" = "black",
+      "Hyperband" = "#1f77b4",
+      "SeqUD" = "#2ca02c",
+      "Bayes" = "#d62728",
+      "Random" = "#ff7f0e"
+    )
+  ) +
+  xlim(0, 3) +
+  ylim(0, 2) +
+  labs(
+    x = "Runtime",
+    y = "Test Error",
+    title = "Optimizer Comparison (Neural Network Only)"
+  ) +
+  theme_minimal(base_size = 13)
+```
+
+Bayesian Optimzier takes a very long time to select the next point, for the CNN it
+took about 5-8 minutes to evaluate one configuration, but Bayes might take 60-120 minutes
+to pick the next point. So it tests compartively very few configurations, which is likely
+why it performs worse than the others here. \
+
+The runtimes were intentionally meant to be similar, so let's focus on the distribution
+test errors.
+
+```{r, echo=FALSE}
+ggplot(res, aes(x = opt, y = test_error, fill = opt)) +
+  geom_boxplot(outlier.size = 2, width = 0.6) +
+  scale_fill_manual(
+    values = c(
+      "Grid" = "black",
+      "Hyperband" = "#1f77b4",
+      "SeqUD" = "#2ca02c",
+      "Bayes" = "#d62728",
+      "Random" = "#ff7f0e"
+    )
+  ) +
+  labs(
+    x = "Optimizer",
+    y = "Test Error",
+    title = "Test Error Distribution by Optimizer"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "none")
+```
+
+This plot gives the impression that Hyperband is not very good. However, again, 
+we do not have enough data to draw clear results. There are a few things I have learned
+that I think I can say. The sequential algorithms (Bayes and SeqUD) do better in lower
+dimensions and when the objective function takes longer to run. The longer the
+objective function takes to run the smarter we want to be about what configuration to try, 
+but as dimensionality increases these algorithms take significantly longer to pick new points. 
+If we can pick good distributions for Random Search it works very well. Never use Grid
+Search. Hopefully this was interesting to you!
+
+# Appendix
+## R Code
+### Grid Search Code
+[Click here to go back](#grid-search)
+```{r, eval=FALSE}
+grid_search <- function(X, y, obj_func, param_values) {
+  # Create the grid
+  grid <- expand.grid(param_values, stringsAsFactors = FALSE)
+
+  # Evaluate objective function at each point
+  n <- nrow(grid)
+  errors <- numeric(length = n)
+  for(i in 1:n) {
+    errors[i] <- obj_func(X, y, params=grid[i,])
+  }
+  
+  # find & return best model (lowest error)
+  return(grid[which.min(errors), ])
+}
+```
+### Random Search Code
+[Click here to go back](#random-search)
+```{r}
+random_search <- function(X, y, obj_func, param_dists, n) {
+  # get n many realizations of the parameters
+  grid <- data.frame(row.names = 1:n)
+  for(p in names(param_dists)) {
+    grid[[p]] <- param_dists[[p]](n)
+  }
+  
+  # Evaluate objective function at each point
+  errors <- numeric(length = n)
+  for(i in 1:n) {
+    errors[i] <- obj_func(X, y, params=grid[i,])
+  }
+  
+  # find & return best model (lowest error)
+  return(grid[which.min(errors), ])
+}
+```
+### Bayesian Optimization Code
+[Click here to go back](#bayesian-optimization-using-guassian-processes) \
+This one is really simple since the bayesOpt function does all the work for us. 
+```{r}
+bayes_search <- function(X, y, obj_func, param_bounds, n, t_limit=NULL) {
+  scoreFunction <- function(...){
+    # negative since bayesOpt is a maximizer
+    list(Score = -obj_func(X=X, y=y, params=list(...)))
+  }
+  
+  init_points <- max(6, length(param_bounds)+1)
+
+  optObj <- ParBayesianOptimization::bayesOpt(
+    FUN = scoreFunction,
+    bounds = param_bounds,
+    initPoints = init_points, # randomly eval at some points initially
+    iters.n = n,
+    iters.k = 1,
+    otherHalting = list(timeLimit = t_limit)
+  )
+  # Return Results
+  return(data.frame(getBestPars(optObj)))
+}
+```
+### Hyperband Code
+[Click here to go back](#hyperband)
+```{r, eval=FALSE}
+hyperband <- function(X, y, obj_func, param_dists, R, eta = 3) {
+  all_results <- list()
+  
+  # maximum number of brackets
+  s_max <- floor(log(R, base = eta))
+  B <- (s_max + 1) * R
+  
+  for(s in s_max:0) {
+    
+    n <- ceiling((B / R) * eta^s / (s + 1))
+    r <- R * eta^(-s)
+    
+    # Begin Successive Halving in inner loop
+    # get n many realizations of the parameters
+    grid <- data.frame(row.names = 1:n)
+    for(p in names(param_dists)) {
+      grid[[p]] <- param_dists[[p]](n)
+    }
+    
+    for(i in 0:s) {
+      n_i <- nrow(grid)
+      r_i <- r * eta^i
+      
+      # Get losses
+      L <- numeric(length = n_i)
+      for(j in 1:n_i) {
+        # r_frac is normalized resource allocation
+        L[j] <- obj_func(X, y, params = grid[j, ], r_frac = r_i/R)
+      }
+      
+      grid$error <- L
+      all_results[[length(all_results) + 1]] <- grid
+      
+      # Update grid to be just the top n_i / eta performers
+      k <- max(1, floor(n_i / eta))
+      grid <- head(grid[order(grid$error), ], k)
+    }
+  }
+  # Combine everything
+  results <- do.call(rbind, all_results)
+  # Find & Return best model
+  return(results[which.min(results$error), ])
+}
+```
+### SeqUD Code
+[Click here to go back](#sequential-uniform-designs-sequd)
+```{r}
+augmentUD <- function(X0, add, n_candidates = 1000) {
+  # X0: existing design (rows = runs, cols = factors), scaled to [0,1]
+  # add: number of new points to add
+  # n_candidates: number of candidate points to try each step
+  d <- ncol(X0)
+  new_points <- c()
+  
+  for (k in 1:add) {
+    # generate random candidate points
+    C <- matrix(runif(n_candidates * d), ncol = d)
+    # score each candidate by discrepancy when added
+    scores <- apply(C, 1, function(cand) {
+      SFDesign::uniform.crit(rbind(X0, cand))
+    })
+    # pick best candidate
+    best <- C[which.min(scores), , drop = FALSE]
+    # update design
+    X0 <- rbind(X0, best)
+    new_points <- rbind(new_points, best)
+  }
+  new_points
+}
+
+seqUD <- function(X, y, obj_func, param_bounds, T_max, n_points){
+  d <- length(param_bounds)
+
+  # Find range and min of each param
+  mins <- sapply(param_bounds, function(x) as.numeric(x[1]))
+  lwr <- mins
+  upr <- sapply(param_bounds, function(x) as.numeric(x[2]))
+  ranges <- sapply(param_bounds, function(x) as.numeric(diff(x)))
+  is_int <- sapply(param_bounds, function(x) is.integer(x))
+  
+  from_01_to_ps <- function(U) {
+    out <- matrix(NA, nrow = nrow(U), ncol = d)
+    for (j in 1:d) {
+      vals <- mins[j] + U[, j] * ranges[j]
+      if (is_int[j]) {
+        vals <- round(vals)
+      }
+      out[, j] <- vals
+    }
+    
+    colnames(out) <- names(param_bounds)
+    as.data.frame(out)
+  }
+  
+  U01 <- c()
+  grid <- c()
+  box_radius <- 0.5
+  
+  for(t in 1:T_max) {
+    # Generate points
+    if(length(U01) == 0){ # Make fresh design
+      new_points <- uniformLHD(n = n_points, p = d)$design
+      # map to parameter space
+      ps_points <- from_01_to_ps(new_points)
+      
+    } else { # Augment existing
+      # update boundaries
+      box_radius <- box_radius * 0.5
+      lwr <- best - box_radius
+      upr <- best + box_radius
+      
+      # Check if the box is outside [0,1]^d
+      shift_lwr <- pmax(0 - lwr, 0)   # how far below 0
+      shift_upr <- pmin(1 - upr, 0)   # how far above 1 (negative)
+      
+      # total shift = whichever adjustment is needed
+      shift <- shift_lwr + shift_upr
+      
+      # apply shift to corners
+      lwr <- lwr + shift
+      upr <- upr + shift
+   
+      # Find which points are in the new bounds
+      in_the_box <- apply(U01, MARGIN=1, FUN = function(x) {2 * d == sum(c(x > lwr, x < upr )  )})
+      box_points <- U01[in_the_box, , drop=FALSE]
+      
+      # Augment the sub design
+      n_e <- n_points - nrow(box_points)
+      new_points <- augmentUD(sweep(box_points, 2, lwr, "-") / (box_radius * 2), add = n_e, n_candidates = 1000*d)
+      
+      # Shift the design back into place
+      new_points <- (new_points * (box_radius * 2)) 
+      new_points <- sweep(new_points, 2, lwr, "+")
+      
+      # Generate points in the parameter space
+      ps_points <- from_01_to_ps(new_points)
+    }
+    
+    # Evaluate each point
+    n <- nrow(ps_points)
+    errors <- numeric(length = n)
+    
+    for(i in 1:n) {
+      errors[i] <- obj_func(X, y, params=ps_points[i, ])
+    }
+    # Save the errors
+    ps_points$error <- errors
+    # Append new points onto old points
+    grid <- rbind(grid, ps_points)
+    U01 <- rbind(U01, new_points)
+    # Find the best point
+    best_idx <- which.min(grid$error)
+    best <- U01[best_idx, ]
+  }
+  # Return results
+  return(grid[best_idx, ])
+}
+```
+
+## References
+
+Bergstra, J., & Bengio, Y. (2012). Random search for hyper-parameter optimization. Journal of Machine Learning Research, 13(10), 281-305. Retrieved from http://jmlr.org/papers/v13/bergstra12a.html
+
+Li, L., Jamieson, K., DeSalvo, G., Rostamizadeh, A., & Talwalkar, A. (2018). Hyperband: A novel bandit-based approach to hyperparameter optimization. Journal of Machine Learning Research, 18(185), 1-52. Retrieved from http://jmlr.org/papers/v18/16-558/16-558.pdf
+ 
+Yang, Z., & Zhang, A. (2021). Hyperparameter optimization via sequential uniform designs. Journal of Machine Learning Research, 22, 1-47. Retrieved from http://jmlr.org/papers/v22/20-058.html
